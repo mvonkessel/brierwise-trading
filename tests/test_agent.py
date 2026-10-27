@@ -87,6 +87,13 @@ class DecideTest(unittest.TestCase):
         ms = market(tickers=["SPY", "QQQ", "AAPL"])
         self.assertIsInstance(run(ms), list)
 
+    def test_data_gap_keeps_the_book(self):
+        ms = market()
+        held = [(o["ticker"], o["quantity"]) for o in run(ms) if o["side"] == "buy"]
+        for gone in ("SPY", "QQQ"):
+            gap = {t: r for t, r in ms.items() if t != gone}
+            self.assertEqual(run(gap, cash=1000.0, positions=held), [])
+
 
 if __name__ == "__main__":
     unittest.main()

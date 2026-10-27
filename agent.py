@@ -29,7 +29,7 @@ P = {
     "sleeve": "TQQQ",       # leveraged sleeve in calm uptrends (3x)
     "sleeve_weight": 0.20,  # 80% names + 3 x 20% = 1.40x beta-adjusted gross
     "gross_cap": 1.45,      # never plan above this (engine limit 1.5x)
-    "name_cap": 0.27,       # never plan or keep above this (engine limit 30%)
+    "name_cap": 0.27,       # guard: never plan above this (engine limit 30%)
     "band": 0.025,          # skip trades smaller than 2.5% of equity ...
     "band_levered": 0.01,   # ... or 1% for the leveraged sleeve, so gross cannot creep up
 }
@@ -63,13 +63,13 @@ def _vol(xs, n=20):
     return math.sqrt(sum((a - m) ** 2 for a in r) / (n - 1)) * math.sqrt(252)
 
 
-def targets(market_state: dict) -> dict:
-    """Target weights {ticker: fraction of equity}, from the bars alone."""
+def targets(market_state: dict):
+    """Target weights {ticker: fraction of equity} from the bars alone, or None when SPY or QQQ history is missing."""
     closes = {t: _closes(b) for t, b in market_state.items() if b}
     spy, qqq = closes.get("SPY", []), closes.get("QQQ", [])
     trend, qv = _sma(spy, P["trend_days"]), _vol(qqq)
     if trend is None or qv is None:
-        return {}                                   # not enough history: stay in cash
+        return None                                 # regime unknown: no trades (a data gap must not empty the book)
     if spy[-1] <= trend or qv > P["crash_vol"]:
         return {}                                   # downtrend or crash-level volatility: cash
     need = P["mom_days"] + 1
@@ -89,6 +89,8 @@ def targets(market_state: dict) -> dict:
 
 def decide(market_state, portfolio_state, cash):
     w = targets(market_state)
+    if w is None:
+        return []
     prices = {}
     for t, bars in market_state.items():
         xs = _closes(bars[-1:]) if bars else []
@@ -109,7 +111,7 @@ def decide(market_state, portfolio_state, cash):
     equity = cash + sum(q * prices.get(t, 0.0) for t, q in held.items())
     if equity <= 0:
         return []
-    # Caps with a buffer for overnight drift.
+    # Guards below the published limits; with the settings above they never bind (plan: 20% a name, 1.40x gross).
     w = {t: min(x, P["name_cap"]) for t, x in w.items() if prices.get(t, 0.0) > 0}
     gross = sum(x * beta(t) for t, x in w.items())
     if gross > P["gross_cap"]:
@@ -129,8 +131,6 @@ def decide(market_state, portfolio_state, cash):
         elif abs(diff) >= (P["band"] if beta(t) == 1 else P["band_levered"]) * equity:
             side = "buy" if diff > 0 else "sell"
             (buys if diff > 0 else sells).append({"ticker": t, "side": side, "quantity": abs(diff) / px})
-        elif cur > P["name_cap"] * equity:
-            sells.append({"ticker": t, "side": "sell", "quantity": (cur - P["name_cap"] * equity) / px})
     # Sells fill first; buys are scaled to the cash they free, less a margin for the opening gap.
     free = max(0.0, cash) + sum(o["quantity"] * prices[o["ticker"]] for o in sells)   # cash can be -1e-12
     cost = sum(o["quantity"] * prices[o["ticker"]] for o in buys)
